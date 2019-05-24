@@ -1,21 +1,22 @@
 package checker
 
 import (
-	"github.com/qianlidongfeng/loger/netloger"
 	"github.com/qianlidongfeng/toolbox"
 	"time"
 )
 
 type LogConfig struct{
 	LogType string
-	DB netloger.SqlConfig
+	DB toolbox.MySqlConfig
 }
 
 type Config struct{
 	Thread int
-	TimeOut time.Duration
 	Debug bool
-	Limit int
+	BadSuccessrate int
+	BadExist int
+	RpcClientServer []string
+	RpcTimeout time.Duration
 	DB toolbox.MySqlConfig
 	Loger LogConfig
 }

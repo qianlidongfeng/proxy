@@ -1,0 +1,4 @@
+timeout: 2000 #httpclient超时时间，单位毫秒
+port: 3333 #grpc服务监听端口
+checkurl: "http://2019.ip138.com/ic.asp" #作为检测的url地址
+maxhttpclient: 2000 #最大httpclient数量,以免太多崩溃

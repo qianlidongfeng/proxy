@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package clientserver;
+
+
+
+service Http {
+  // Sends a greeting
+  rpc Get (ProxyInfo) returns (Respone) {}
+  // rpc 借口的类型分为一下四种: A为接受参数,B为返回参数
+  // 1. rpc GetFeature(Point) returns (Feature) {} 普通调用:A-B
+  // 2. rpc ListFeatures(Rectangle) returns (stream Feature) {} 单向流:A - B(流)
+  // 3. rpc RecordRoute(stream Point) returns (RouteSummary) {} 单向流:A(流) - B
+  // 4. rpc RouteChat(stream RouteNote) returns (stream RouteNote) {} 双向流:A(流) - B(流)
+}
+
+message ProxyInfo{
+    string proxy = 1;
+    string type = 2;
+}
+
+message Respone{
+    bytes content = 1;
+    int32 status=2;
+}

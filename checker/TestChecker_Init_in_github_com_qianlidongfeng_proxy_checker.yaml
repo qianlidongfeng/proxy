@@ -1,8 +1,11 @@
 #proxy checker 配置文件
-thread: 1000 #请求线程数量
-timeout: 2000 #请求超时，毫秒
+thread: 200 #请求线程数量
 debug: true #是否调试模式
-limit: 1000 #每次从数据库中取多少个代理来检测
+badsuccessrate: 0 #成功率小于这个数且存在时间小于badexist的代理会被删除
+badexist: 84600 #单位秒，存在时间超过这个数且成功率小于badsuccessrate的代理会被删除
+minsuccessrate: 5#不被删除的最小成功率
+rpcclientserver: 127.0.0.1:9527 #rpc httpclient服务器地址
+rpctimeout: 2000 #rpc超时时间，毫秒
 
 db: #保存数据库配置
   user: root
@@ -10,8 +13,8 @@ db: #保存数据库配置
   address: 127.0.0.1
   database: proxy
   table: proxies
-  maxopenconns: 100
-  maxidleconns: 100
+  maxopenconns: 50
+  maxidleconns: 50
 
 loger: #日志配置
   logtype: netlog
@@ -23,6 +26,3 @@ loger: #日志配置
     maxopenconns: 4
     maxidleconns: 2
     table: proxy_checker
-
-
-

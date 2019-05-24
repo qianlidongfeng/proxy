@@ -1,0 +1,28 @@
+#proxy server配置文件
+
+debug: false #是否调试模式
+
+db: #保存数据库配置
+  user: root
+  password: 333221
+  address: 127.0.0.1
+  database: proxy
+  table: proxies
+  maxopenconns: 50
+  maxidleconns: 50
+
+log: #日志配置
+  logtype: netlog
+  db:
+    user: root
+    password: 333221
+    address: 127.0.0.1
+    database: "project_logs"
+    maxopenconns: 4
+    maxidleconns: 2
+    table: proxy_server
+
+httpserver: #http服务配置
+  address: :8080
+  readtimeout: 5000 #毫秒
+  writetimeout: 5000 #毫秒

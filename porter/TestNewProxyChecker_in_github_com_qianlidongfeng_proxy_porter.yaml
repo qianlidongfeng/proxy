@@ -1,0 +1,38 @@
+#proxy checker 配置文件
+thread: 100 #请求线程数量
+timeout: 2000 #请求超时，毫秒
+debug: true #是否调试模式
+limit: 500 #每次从数据库中取多少个代理来检测
+rpcclientserver: #rpc httpclient服务器地址
+  - 127.0.0.1:3333
+  #- 127.0.0.1:3334
+rpctimeout: 2000 #rpc超时时间，毫秒
+
+srcdb: #源库配置
+  user: root
+  password: 333221
+  address: 127.0.0.1
+  database: proxy
+  table: collection
+  maxopenconns: 50
+  maxidleconns: 50
+
+destdb: #目标数据库配置
+  user: root
+  password: 333221
+  address: 127.0.0.1
+  database: proxy
+  table: proxies
+  maxopenconns: 50
+  maxidleconns: 50
+
+loger: #日志配置
+  logtype: netlog
+  db:
+    user: root
+    password: 333221
+    address: 127.0.0.1
+    database: "project_logs"
+    maxopenconns: 4
+    maxidleconns: 2
+    table: proxy_porter
