@@ -3,7 +3,6 @@ package proxyserver
 import (
 	"github.com/qianlidongfeng/httpserver"
 	"github.com/qianlidongfeng/loger"
-	"github.com/qianlidongfeng/loger/netloger"
 	"github.com/qianlidongfeng/toolbox"
 	syslog "log"
 	"os"
@@ -34,15 +33,9 @@ func (this *ProxyServer) Run() error{
 			syslog.Fatal(err)
 		}
 	}
-	if this.cfg.Log.LogType == "netlog" && this.cfg.Debug==false{
-		lg:=netloger.NewSqloger()
-		err=lg.Init(this.cfg.Log.DB)
-		if err != nil{
-			return err
-		}
-		log=lg
-	}else{
-		log=loger.NewLocalLoger()
+	log,err:=loger.NewLoger(this.cfg.Log)
+	if err != nil{
+		return err
 	}
 	db,err= toolbox.InitMysql(this.cfg.DB)
 	if err != nil{
@@ -50,7 +43,11 @@ func (this *ProxyServer) Run() error{
 	}
 	proxieTable = this.cfg.DB.Table
 	this.HttpServer=httpserver.NewHttpServer()
-	this.HttpServer.Bind("/httpproxies",HttpProxies)
+	this.HttpServer.Bind("/mycollectionhttpproxies",MyCollectionHttpProxies)
+	this.HttpServer.Bind("/mycollectionsock5proxies",MyCollectionSock5Proxies)
+	this.HttpServer.Bind("/myscanhttpproxies",MyScanHttpProxies)
+	this.HttpServer.Bind("/myscansock5proxies",MyScanSock5Proxies)
+	this.HttpServer.Bind("/myproxies",MyProxies)
 	return this.HttpServer.Run(this.cfg.HttpServer)
 }
 

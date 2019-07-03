@@ -2,8 +2,8 @@ package porter
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
-	"github.com/go-sql-driver/mysql"
 	"github.com/qianlidongfeng/httpclient"
 	"github.com/qianlidongfeng/loger"
 	"github.com/qianlidongfeng/loger/netloger"
@@ -37,9 +37,8 @@ type ProxyPorter struct{
 	rpcConns     []*grpc.ClientConn
 	rpcClients   []clientserver.HttpClient
 	proxyPool   chan Feilds
-	url         string
 	selfIp      string
-	selfClient  httpclient.HttpClient
+	selfClient  httpclient.Client
 	clientIndex int
 	mu sync.Mutex
 	wg sync.WaitGroup
@@ -55,15 +54,10 @@ func (this *ProxyPorter) Init(configPath string) error{
 		return err
 	}
 	if this.cfg.Debug == false{
-		appPath,err:=toolbox.AppPath()
+		this.stdout, err = toolbox.RediRectOutPutToLog()
 		if err != nil{
 			log.Fatal(err)
 		}
-		this.stdout, err = os.OpenFile(appPath+".log", os.O_WRONLY|os.O_CREATE|os.O_SYNC|os.O_APPEND, 0644)
-		if err != nil{
-			log.Fatal(err)
-		}
-		log.SetOutput(this.stdout)
 	}
 	if this.cfg.Loger.LogType == "netlog" && this.cfg.Debug==false{
 		lg:=netloger.NewSqloger()
@@ -102,8 +96,7 @@ func (this *ProxyPorter) Init(configPath string) error{
 		this.rpcClients=append(this.rpcClients,rpcClient)
 	}
 	this.proxyPool = make(chan Feilds,this.cfg.Thread)
-	this.url="http://2019.ip138.com/ic.asp"
-	this.selfClient= httpclient.NewHttpClient()
+	this.selfClient= httpclient.NewClient()
 	this.selfClient.SetTimeOut(10*time.Second)
 	return nil
 }
@@ -120,7 +113,8 @@ func (this *ProxyPorter) GetRpcClient() clientserver.HttpClient{
 }
 
 func (this *ProxyPorter) Port() error{
-	this.selfIp=this.getSelfIp()
+	//this.selfIp=this.getSelfIp()
+	fmt.Println("begin")
 	for i:=0;i<this.cfg.Thread;i++{
 		go func(index int){
 			for{
@@ -129,7 +123,7 @@ func (this *ProxyPorter) Port() error{
 		}(i)
 	}
 	for{
-		rows,err:=this.srcdb.Query(fmt.Sprintf(`select id,proxy,type,source,ctime from %s order by id limit ?`,this.cfg.SrcDB.Table),this.cfg.Limit)
+		rows,err:=this.srcdb.Query(fmt.Sprintf(`select id,proxy,type,source,ctime,iprange from %s order by id limit ?`,this.cfg.SrcDB.Table),this.cfg.Limit)
 		if err != nil{
 			this.loger.Fatal(err)
 		}
@@ -137,7 +131,7 @@ func (this *ProxyPorter) Port() error{
 		for rows.Next(){
 			fields := Feilds{}
 			var id int64
-			err=rows.Scan(&id,&fields.proxy,&fields.tp,&fields.source,&fields.ctime)
+			err=rows.Scan(&id,&fields.proxy,&fields.tp,&fields.source,&fields.ctime,&fields.iprange)
 			if err != nil{
 				this.loger.Fatal(err)
 			}
@@ -145,6 +139,7 @@ func (this *ProxyPorter) Port() error{
 			this.proxyPool<-fields
 			this.wg.Add(1)
 		}
+		rows.Close()
 		this.wg.Wait()
 		idCount :=len(ids)
 		if idCount != 0{
@@ -155,7 +150,6 @@ func (this *ProxyPorter) Port() error{
 						sids=strings.TrimRight(sids,",")
 						_,err=this.srcdb.Exec(fmt.Sprintf(`delete from %s where id in (%s)`,this.cfg.SrcDB.Table,sids))
 						if err != nil{
-							rows.Close()
 							this.loger.Msg("sql",fmt.Sprintf(`delete from %s where id in (%s)`,this.cfg.SrcDB.Table,sids))
 							this.loger.Fatal(err)
 						}
@@ -168,7 +162,6 @@ func (this *ProxyPorter) Port() error{
 					sids=strings.TrimRight(sids,",")
 					_,err=this.srcdb.Exec(fmt.Sprintf(`delete from %s where id in (%s)`,this.cfg.SrcDB.Table,sids))
 					if err != nil{
-						rows.Close()
 						this.loger.Msg("sql",fmt.Sprintf(`delete from %s where id in (%s)`,this.cfg.SrcDB.Table,sids))
 						this.loger.Fatal(err)
 					}
@@ -178,20 +171,21 @@ func (this *ProxyPorter) Port() error{
 		}else{
 			time.Sleep(time.Second)
 		}
-		this.selfIp=this.getSelfIp()
-		rows.Close()
-		time.Sleep(time.Second)
+		//this.selfIp=this.getSelfIp()
+		time.Sleep(time.Millisecond*this.cfg.Delay)
 	}
 	return nil
 }
 
 type Feilds struct{
 	proxy string
+	port int
 	area string
 	tp string
 	category int
 	source string
 	ctime string
+	iprange string
 }
 
 func (this *ProxyPorter) Do(){
@@ -202,18 +196,23 @@ func (this *ProxyPorter) Do(){
 	var resp *clientserver.Respone
 	client:= this.GetRpcClient()
 	if strings.ToLower(fields.tp)=="http" || strings.ToLower(fields.tp)=="https"{
-		resp,err=client.Get(context.Background(),&clientserver.ProxyInfo{Proxy:"http://"+fields.proxy,Type:"http"})
-	}else if strings.ToLower(fields.tp)=="sock5"{
-		resp,err=client.Get(context.Background(),&clientserver.ProxyInfo{Proxy:fields.proxy,Type:"sock5"})
+		//Url:"https://www.baidu.com/s?wd=ip"
+		resp,err=client.Get(context.Background(),&clientserver.ProxyInfo{Proxy:"http://"+fields.proxy,})
+		fields.category=0
+	}else if strings.ToLower(fields.tp)=="socks5"{
+		resp,err=client.Get(context.Background(),&clientserver.ProxyInfo{Proxy:"socks5://"+fields.proxy})
+		fields.category=0
 	}else if strings.ToLower(fields.tp)=="unknown"{
-		resp,err=client.Get(context.Background(),&clientserver.ProxyInfo{Proxy:"http://"+fields.proxy,Type:"http"})
+		resp,err=client.Get(context.Background(),&clientserver.ProxyInfo{Proxy:"http://"+fields.proxy})
 		if err != nil || resp == nil{
-			resp,err=this.GetRpcClient().Get(context.Background(),&clientserver.ProxyInfo{Proxy:fields.proxy,Type:"sock5"})
+			resp,err=client.Get(context.Background(),&clientserver.ProxyInfo{Proxy:"socks5://"+fields.proxy})
 			if err == nil && resp != nil{
-				fields.tp="sock5"
+				fields.tp="socks5"
+				fields.category=0
 			}
 		}else{
 			fields.tp="http"
+			fields.category=0
 		}
 	}
 	if err != nil || resp == nil{
@@ -225,12 +224,10 @@ func (this *ProxyPorter) Do(){
 		}
 		return
 	}
-	html,err:=toolbox.GbkToUtf8(string(resp.Content))
-	if err != nil{
+	if resp.Status != 200{
 		return
 	}
-	fields.category=0
-	this.Parse(html,fields)
+	this.onSuccess(fields)
 }
 
 func (this *ProxyPorter) Parse(html string,fields Feilds){
@@ -266,8 +263,10 @@ func (this *ProxyPorter) checkRpcReady(conn *grpc.ClientConn,timeout time.Durati
 }
 
 func (this *ProxyPorter) onSuccess(fields Feilds){
-	_,err:=this.destdb.Exec(fmt.Sprintf(`insert into %s (proxy,area,type,category,source,ctime)values(?,?,?,?,?,?)`,this.cfg.DestDB.Table),fields.proxy,fields.area,fields.tp,fields.category,fields.source,fields.ctime)
-	if err != nil&& err.(*mysql.MySQLError).Number != 1062{
+	fields.port,_= strconv.Atoi(strings.Split(fields.proxy,":")[1])
+	_,err:=this.destdb.Exec(fmt.Sprintf(`insert ignore into %s (proxy,port,type,category,source,ctime,iprange)values(?,?,?,?,?,?,?)`,this.cfg.DestDB.Table),fields.proxy,fields.port,fields.tp,fields.category,fields.source,fields.ctime,fields.iprange)
+	//&& err.(*mysql.MySQLError).Number != 1062
+	if err != nil{
 		this.loger.Warn(err)
 	}
 }
@@ -275,35 +274,30 @@ func (this *ProxyPorter) onSuccess(fields Feilds){
 
 func (this *ProxyPorter) getSelfIp() string{
 	for{
-		r,err:= this.selfClient.Get(this.url)
+		resp,err:=this.selfClient.Get("http://ip.cz88.net/data.php")
 		if err != nil{
-			this.loger.Msg("selfip",err)
+			this.loger.Warn(err)
 			time.Sleep(10*time.Second)
 			continue
 		}
-		html,err := toolbox.GbkToUtf8(r.Html)
-		if err != nil{
-			this.loger.Msg("selfip",err)
+		if resp.StatusCode != 200{
+			this.loger.Warn(errors.New(fmt.Sprintf("get selfip failed,status code:%d",resp.StatusCode)))
 			time.Sleep(10*time.Second)
 			continue
 		}
-		info,err := proxy.GetIpFrom138(html)
+		info,err:=proxy.GetIpFromCz(resp.Html)
 		if err != nil{
-			this.loger.Msg("selfip",err)
-			time.Sleep(10*time.Second)
+			this.loger.Warn(err)
+			time.Sleep(time.Second*10)
 			continue
 		}
 		return info.IP
 	}
 }
 
-func (this *ProxyPorter) getIp(html string) (string,error){
-	info,err:=proxy.GetIpFrom138(html)
-	return info.IP,err
-}
 
 func (this *ProxyPorter) getProxyInfo(html string) (proxy.Info,error){
-	info,err:=proxy.GetIpFrom138(html)
+	info,err:=proxy.GetIpFromBaidu(html)
 	return info,err
 }
 

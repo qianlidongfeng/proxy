@@ -2,6 +2,7 @@ package checker
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/qianlidongfeng/httpclient"
 	"github.com/qianlidongfeng/loger"
@@ -17,6 +18,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,13 +37,11 @@ type ProxyChecker struct{
 	rpcConns     []*grpc.ClientConn
 	rpcClients   []clientserver.HttpClient
 	proxyPool   chan Feilds
-	stmtGet     *sql.Stmt
 	stmtFail    *sql.Stmt
 	stmtSuccess *sql.Stmt
-	url         string
 	success     int
 	selfIp      string
-	selfClient  httpclient.HttpClient
+	selfClient  httpclient.Client
 	clientIndex int
 	mu sync.Mutex
 	wg sync.WaitGroup
@@ -92,15 +92,11 @@ func (this *ProxyChecker) Init(configPath string) error{
 	fields["total"]="int(11) unsigned"//检测总次数
 	fields["successrate"]="tinyint(4) unsigned"//成功率
 	fields["exist"]="int(11) unsigned" //存在总时长
-	fields["lastcheck"]="int(11) unsigned"
+	fields["lastcheck"]="bigint(20) unsigned"
 	fields["distributetime"]="bigint(20) unsigned"
 	fields["source"]="varchar(16)" //代理来源
 	fields["ctime"]="datetime" //创建时间
 	err=toolbox.CheckTable(this.db,this.cfg.DB.Table,fields)
-	if err != nil{
-		this.loger.Fatal(err)
-	}
-	this.stmtGet,err=this.db.Prepare(fmt.Sprintf(`SELECT id,proxy,type,success,total,ctime FROM %s`,this.cfg.DB.Table))
 	if err != nil{
 		this.loger.Fatal(err)
 	}
@@ -131,8 +127,7 @@ func (this *ProxyChecker) Init(configPath string) error{
 		this.rpcClients=append(this.rpcClients,rpcClient)
 	}
 	this.proxyPool = make(chan Feilds,this.cfg.Thread)
-	this.url="http://2019.ip138.com/ic.asp"
-	this.selfClient= httpclient.NewHttpClient()
+	this.selfClient= httpclient.NewClient()
 	this.selfClient.SetTimeOut(10*time.Second)
 	return nil
 }
@@ -157,13 +152,32 @@ func (this *ProxyChecker) Check() error{
 			}
 		}(i)
 	}
+	srange:=strings.Split(this.cfg.Range,"-")
+	begin,_:=strconv.Atoi(srange[0])
+	var end int
+	if srange[1] == ""{
+		end = -1
+	}else{
+		end,_ = strconv.Atoi(srange[1])
+	}
+	var left,right int
+	left=begin
 	for{
 		this.success=0
-		rows,err:=this.stmtGet.Query()
+		count:=0
+		st:=time.Now()
+		//rows,err:=this.stmtGet.Query()
+		if end-left < this.cfg.Limit && end != -1{
+			right= end - left
+		}else{
+			right = this.cfg.Limit
+		}
+		rows,err:=this.db.Query(fmt.Sprintf(`SELECT id,proxy,type,success,total,ctime FROM %s ORDER BY id LIMIT %d,%d`,this.cfg.DB.Table,left,right))
 		if err != nil{
 			this.loger.Fatal(err)
 		}
 		for rows.Next(){
+			count++
 			fields := Feilds{}
 			err=rows.Scan(&fields.id,&fields.proxy,&fields.tp,&fields.success,&fields.total,&fields.ctime)
 			if err != nil{
@@ -172,16 +186,25 @@ func (this *ProxyChecker) Check() error{
 			this.wg.Add(1)
 			this.proxyPool<-fields
 		}
+		rows.Close()
 		this.wg.Wait()
 		err=this.DeleteInvalidProxy()
 		if err != nil{
-			rows.Close()
 			this.loger.Fatal(err)
 		}
-		this.selfIp=this.getSelfIp()
-		rows.Close()
-		this.loger.Msg("totoal success",this.success)
-		time.Sleep(time.Second)
+		//this.selfIp=this.getSelfIp()
+		if this.cfg.Debug{
+			this.loger.Msg("totoal success",this.success)
+		}
+		left=left+right
+		if (left>=end && end != -1)||count==0{
+			left=begin
+			cost := time.Since(st)/time.Second
+			subt := this.cfg.Delay-cost
+			if subt > 0{
+				time.Sleep(subt*time.Second)
+			}
+		}
 	}
 	return nil
 }
@@ -192,11 +215,7 @@ func (this *ProxyChecker)Do(){
 	defer this.wg.Done()
 	var err error
 	var resp *clientserver.Respone
-	if strings.ToLower(fields.tp)=="http" || strings.ToLower(fields.tp)=="https"{
-		resp,err=this.GetRpcClient().Get(context.Background(),&clientserver.ProxyInfo{Proxy:"http://"+fields.proxy,Type:"http"})
-	}else if strings.ToLower(fields.tp)=="sock5"{
-		resp,err=this.GetRpcClient().Get(context.Background(),&clientserver.ProxyInfo{Proxy:fields.proxy,Type:"sock5"})
-	}
+	resp,err=this.GetRpcClient().Get(context.Background(),&clientserver.ProxyInfo{Proxy:fields.tp+"://"+fields.proxy})
 	if err != nil || resp == nil{
 		code:=status.Code(err)
 		if code != codes.Unknown && code !=codes.OK{
@@ -207,12 +226,11 @@ func (this *ProxyChecker)Do(){
 		this.onFail(fields)
 		return
 	}
-	html,err:=toolbox.GbkToUtf8(string(resp.Content))
-	if err != nil{
+	if resp.Status != 200{
 		this.onFail(fields)
 		return
 	}
-	this.Parse(html,fields)
+	this.onSuccess(fields)
 }
 
 type Feilds struct{
@@ -225,12 +243,12 @@ type Feilds struct{
 }
 
 func (this *ProxyChecker) Parse(html string,fields Feilds){
-	ip,err := this.getIp(html)
+	info,err := this.getProxyInfo(html)
 	if err != nil{
 		this.onFail(fields)
 		return
 	}
-	if ip==this.selfIp{
+	if info.IP==this.selfIp{
 		this.onFail(fields)
 	}else{
 		this.onSuccess(fields)
@@ -241,7 +259,6 @@ func (this *ProxyChecker) Realse(){
 	for _,v := range this.rpcConns{
 		v.Close()
 	}
-	this.stmtGet.Close()
 	this.stmtFail.Close()
 	this.stmtSuccess.Close()
 	this.db.Close()
@@ -262,15 +279,13 @@ func (this *ProxyChecker) onSuccess(fields Feilds){
 	fields.success++
 	fields.total++
 	successrate:=float64(fields.success)/float64(fields.total)
-	ctime,err:=time.Parse("2006-01-02 15:04:05", fields.ctime)
+	ctime,err:=toolbox.TimeToSecondStamp(fields.ctime)
 	if err != nil{
 		this.loger.Fatal(err)
 	}
-	now,err:=time.Parse("2006-01-02 15:04:05",time.Now().Format("2006-01-02 15:04:05"))
-	if err != nil{
-		this.loger.Fatal(err)
-	}
-	_,err=this.stmtSuccess.Exec(fields.success,math.Trunc(successrate*1e2) * 1e-2*100,fields.total,now.Unix()-ctime.Unix(),1,now.Unix(),fields.id)
+	now:=toolbox.GetTimeMilliStamp()
+	exist:=toolbox.GetTimeSecondStamp()-ctime
+	_,err=this.stmtSuccess.Exec(fields.success,math.Trunc(successrate*1e2) * 1e-2*100,fields.total,exist,1,now,fields.id)
 	if err != nil{
 		this.loger.Fatal(err)
 	}
@@ -280,15 +295,13 @@ func (this *ProxyChecker) onSuccess(fields Feilds){
 func (this *ProxyChecker) onFail(fields Feilds){
 	fields.total++
 	successrate:=float64(fields.success)/float64(fields.total)
-	ctime,err:=time.Parse("2006-01-02 15:04:05", fields.ctime)
+	ctime,err:=toolbox.TimeToSecondStamp(fields.ctime)
 	if err != nil{
 		this.loger.Fatal(err)
 	}
-	now,err:=time.Parse("2006-01-02 15:04:05",time.Now().Format("2006-01-02 15:04:05"))
-	if err != nil{
-		this.loger.Fatal(err)
-	}
-	_,err=this.stmtFail.Exec(math.Trunc(successrate*1e2) * 1e-2*100,fields.total,now.Unix()-ctime.Unix(),0,now.Unix(),fields.id)
+	now:=toolbox.GetTimeMilliStamp()
+	exist:=toolbox.GetTimeSecondStamp()-ctime
+	_,err=this.stmtFail.Exec(math.Trunc(successrate*1e2) * 1e-2*100,fields.total,exist,0,now,fields.id)
 	if err != nil{
 		this.loger.Fatal(err)
 	}
@@ -297,35 +310,36 @@ func (this *ProxyChecker) onFail(fields Feilds){
 
 func (this *ProxyChecker) getSelfIp() string{
 	for{
-		r,err:= this.selfClient.Get(this.url)
+		resp,err:=this.selfClient.Get("https://www.baidu.com/s?wd=ip")
 		if err != nil{
-			this.loger.Msg("selfip",err)
+			this.loger.Warn(err)
 			time.Sleep(10*time.Second)
 			continue
 		}
-		html,err := toolbox.GbkToUtf8(r.Html)
-		if err != nil{
-			this.loger.Msg("selfip",err)
+		if resp.StatusCode != 200{
+			this.loger.Warn(errors.New(fmt.Sprintf("get selfip failed,status code:%d",resp.StatusCode)))
 			time.Sleep(10*time.Second)
 			continue
 		}
-		info,err := proxy.GetIpFrom138(html)
+		info,err:=proxy.GetIpFromBaidu(resp.Html)
 		if err != nil{
-			this.loger.Msg("selfip",err)
-			time.Sleep(10*time.Second)
+			this.loger.Warn(err)
+			time.Sleep(time.Second*10)
 			continue
 		}
 		return info.IP
 	}
 }
 
-func (this *ProxyChecker) getIp(html string) (string,error){
-	info,err:=proxy.GetIpFrom138(html)
-	return info.IP,err
+func (this *ProxyChecker) getProxyInfo(html string) (proxy.Info,error){
+	info,err:=proxy.GetIpFromBaidu(html)
+	return info,err
 }
 
 func (this *ProxyChecker) DeleteInvalidProxy() error{
-	_,err:=this.db.Exec(fmt.Sprintf(`DELETE FROM %s WHERE successrate<? AND exist<?`,this.cfg.DB.Table),this.cfg.BadSuccessrate,this.cfg.BadExist)
+	//_,err:=this.db.Exec(fmt.Sprintf(`DELETE FROM %s WHERE successrate<? AND exist>?`,this.cfg.DB.Table),this.cfg.BadSuccessrate,this.cfg.BadExist)
+	//暂时只删除搜集的，扫描的要看每个网段采集了多少
+	_,err:=this.db.Exec(fmt.Sprintf(`DELETE FROM %s WHERE successrate<? AND exist> AND source != 'scan'?`,this.cfg.DB.Table),this.cfg.BadSuccessrate,this.cfg.BadExist)
 	if err != nil{
 		this.loger.Fatal(err)
 	}

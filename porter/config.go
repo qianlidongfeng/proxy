@@ -20,5 +20,6 @@ type Config struct{
 	RpcTimeout time.Duration
 	SrcDB toolbox.MySqlConfig
 	DestDB toolbox.MySqlConfig
+	Delay time.Duration
 	Loger LogConfig
 }

@@ -19,4 +19,7 @@ type Config struct{
 	RpcTimeout time.Duration
 	DB toolbox.MySqlConfig
 	Loger LogConfig
+	Delay time.Duration
+	Limit int
+	Range string
 }

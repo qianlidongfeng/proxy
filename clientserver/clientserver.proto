@@ -17,6 +17,7 @@ service Http {
 message ProxyInfo{
     string proxy = 1;
     string type = 2;
+    string url=3;
 }
 
 message Respone{
